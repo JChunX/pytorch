@@ -3,6 +3,7 @@ Definition of CuTe inspired Layouts for DeviceMesh internal bookkeeping and func
 """
 
 import math
+import operator
 from collections.abc import Iterator
 from dataclasses import dataclass
 from itertools import product
@@ -211,3 +212,43 @@ class _MeshLayout(Layout):
             [offset + rank for rank in self.all_ranks_from_zero()]
             for offset in self.complement(world_size).all_ranks_from_zero()
         ]
+
+    def check_non_overlap(self) -> bool:
+        """
+        Check if the layout has any overlap between the ranks it generates. If there is overlap,
+        we return False, otherwise True.
+
+        The layout is supposed to be injective i.e, aside from indice 0, indices from each
+        dim of the layout must be non-overlapping.
+
+        Here is how it works:
+        1. Sort dimensions by stride (smallest stride first)
+        2. For each dimension, check if:
+           - It has the same stride as previous dimension (duplicate mapping)
+           - Its stride overlaps with the previous dimension's span
+
+        A dimension's "span" is size * stride, representing the address space it covers.
+
+        Example 1 - Valid (no overlap):
+        Layout: sizes=(2,3), strides=(6,1)
+        - Dim 1: stride=1, span=3*1=3, covers addresses [0,1,2]
+        - Dim 0: stride=6, span=2*6=12, covers addresses [0,6]
+        → No overlap since 6 > 3
+
+        Example 2 - Invalid (overlap):
+        Layout: sizes=(2,3), strides=(2,1)
+        - Dim 1: stride=1, span=3*1=3, covers addresses [0,1,2]
+        - Dim 0: stride=2, span=2*2=4, covers addresses [0,2]
+        → Overlap! stride=2 < span=3, so addresses [0,2] are duplicated
+
+        Returns:
+            bool: True if no overlap exists (valid layout), False if overlap detected
+        """
+        previous_span = -1
+        for size, stride in sorted(self.sizes_and_strides, key=operator.itemgetter(1)):
+            if size == 0 or size == 1:
+                continue
+            if stride < previous_span:
+                return False
+            previous_span = size * stride
+        return True
