@@ -801,6 +801,9 @@ def _compile_fx_inner(
     If you change the argument list for this function, make sure you
     also update the call to save_args_for_compile_fx_inner below accordingly.
     """
+    compile_id = torch._guards.CompileContext.current_compile_id()
+    print(f"Inductor compiling ID: {compile_id}", file=sys.stderr)
+
     aot_mode: bool = V.aot_compilation
 
     # Clean up Compiled Triton Kernels per inductor compile, as the future objects
