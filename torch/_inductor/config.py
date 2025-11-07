@@ -849,6 +849,31 @@ worker_start_method: str = decide_worker_start_method()
 # Default value is 16 MB which is arbitrarily selected.
 small_memory_access_threshold: int = 16777216
 
+# Enable horizontal fusions that amortize launch overhead even when no buffers are shared.
+launch_amortized_fusion: bool = (
+    os.environ.get("TORCHINDUCTOR_LAUNCH_AMORTIZED_FUSION", "1") == "1"
+)
+
+# Upper bound on the total I/O (reads + writes in bytes) a launch-amortized fusion is allowed to add.
+launch_amortized_fusion_max_total_io: int = int(
+    os.environ.get("TORCHINDUCTOR_LAUNCH_AMORTIZED_FUSION_MAX_TOTAL_IO", str(8 * 1024 * 1024))
+)
+
+# Limit the number of distinct writes each participant may contribute in a launch-amortized fusion.
+launch_amortized_fusion_max_writes: int = int(
+    os.environ.get("TORCHINDUCTOR_LAUNCH_AMORTIZED_FUSION_MAX_WRITES", "4")
+)
+
+# Limit the number of primitive scheduler nodes we are willing to fuse when amortizing launches.
+launch_amortized_fusion_max_fused_ops: int = int(
+    os.environ.get("TORCHINDUCTOR_LAUNCH_AMORTIZED_FUSION_MAX_FUSED_OPS", "8")
+)
+
+# Automatically expand a dangling pointwise dimension to unlock producer/consumer fusion.
+auto_expand_pointwise_nodes: bool = (
+    os.environ.get("TORCHINDUCTOR_AUTO_EXPAND_POINTWISE_NODES", "1") == "1"
+)
+
 # Whether to log from subprocess workers that are launched.
 worker_suppress_logging: bool = Config(
     justknob="pytorch/compiler:worker_suppress_logging",

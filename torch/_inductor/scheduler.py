@@ -4090,6 +4090,21 @@ class Scheduler:
             for node_grouping in group_grouping.values():
                 check_all_pairs(node_grouping)
 
+        if config.launch_amortized_fusion:
+            iteration_grouping = collections.defaultdict(list)
+            for node in nodes:
+                if self.unfusable_node(node):
+                    continue
+                if not self._is_launch_amortization_candidate(node):
+                    continue
+                iteration_grouping[node.group].append(node)
+            for node_grouping in iteration_grouping.values():
+                if len(node_grouping) < 2:
+                    continue
+                if len(node_grouping) > config.max_horizontal_fusion_size:
+                    node_grouping = node_grouping[: config.max_horizontal_fusion_size]
+                check_all_pairs(node_grouping)
+
         possible_fusions = self.get_possible_fusions_with_highest_priority(
             possible_fusions
         )
@@ -4873,9 +4888,10 @@ class Scheduler:
             if new_shared_data_score >= 0:
                 shared_data_score = new_shared_data_score
 
-        if config.expand_dimension_for_pointwise_nodes and (
-            expand_analysis := self.get_expand_dim_for_pointwise_nodes(node1, node2)
-        ):
+        expand_analysis = None
+        if config.expand_dimension_for_pointwise_nodes or config.auto_expand_pointwise_nodes:
+            expand_analysis = self.get_expand_dim_for_pointwise_nodes(node1, node2)
+        if expand_analysis:
             (expand_dim, smaller_node, expand_size) = expand_analysis
             smaller_node.expand_dimension_for_pointwise_node(expand_dim, expand_size)
             shared_data_score = self.score_fusion_memory(node1, node2)
@@ -5053,6 +5069,69 @@ class Scheduler:
 
     def dep_size_hint(self, dep: Dep) -> int:
         return V.graph.get_dep_size_hint(dep)
+
+    def _total_io_size_hint(self, node: BaseSchedulerNode) -> int:
+        reads = node.read_writes.reads
+        writes = node.read_writes.writes
+        return sum(self.dep_size_hint(dep) for dep in (reads | writes))
+
+    def _is_launch_amortization_candidate(self, node: BaseSchedulerNode) -> bool:
+        if not config.launch_amortized_fusion:
+            return False
+        if node.is_foreach():
+            return False
+        if node.is_reduction():
+            return False
+        if node.is_template():
+            return False
+        if node.has_aliasing_or_mutation():
+            return False
+        if len(node.get_nodes()) > config.launch_amortized_fusion_max_fused_ops:
+            return False
+        device = node.get_device()
+        if device.type not in {"cuda", "xpu", "mtia"}:
+            return False
+        return True
+
+    def can_launch_amortize_fusion(
+        self,
+        node1: BaseSchedulerNode,
+        node2: BaseSchedulerNode,
+        shared_data_score: int,
+    ) -> bool:
+        if shared_data_score >= config.score_fusion_memory_threshold:
+            return False
+
+        if not (
+            self._is_launch_amortization_candidate(node1)
+            and self._is_launch_amortization_candidate(node2)
+        ):
+            return False
+
+        if node1.group != node2.group:
+            return False
+
+        if node1.get_buffer_names() & node2.get_buffer_names():
+            # There is already shared data; regular heuristics should handle this.
+            return False
+
+        if (
+            len(node1.read_writes.writes) > config.launch_amortized_fusion_max_writes
+            or len(node2.read_writes.writes) > config.launch_amortized_fusion_max_writes
+        ):
+            return False
+
+        if (
+            len(node1.get_nodes()) + len(node2.get_nodes())
+            > config.launch_amortized_fusion_max_fused_ops
+        ):
+            return False
+
+        total_io = self._total_io_size_hint(node1) + self._total_io_size_hint(node2)
+        if total_io > config.launch_amortized_fusion_max_total_io:
+            return False
+
+        return True
 
     def score_fusion_memory(
         self, node1: BaseSchedulerNode, node2: BaseSchedulerNode

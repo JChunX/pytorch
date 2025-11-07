@@ -561,12 +561,15 @@ class InductorChoices:
         shared_data_score: int,
     ) -> bool:
         """Hook for heuristics to prevent horizontal (consumer/consumer) fusions"""
+        launch_amortized_ok = scheduler.can_launch_amortize_fusion(
+            node1, node2, shared_data_score
+        )
         if (
             shared_data_score < config.score_fusion_memory_threshold
-        ) and not MixOrderReduction.can_fuse(node1, node2):
+        ) and not MixOrderReduction.can_fuse(node1, node2) and not launch_amortized_ok:
             WhyNoFuse(node1, node2)("score_fusion_memory_threshold")
             return False
-        if scheduler.are_long_distant_nodes(node1, node2):
+        if scheduler.are_long_distant_nodes(node1, node2) and not launch_amortized_ok:
             WhyNoFuse(node1, node2)(
                 "Nodes are too far away. Fusing them may increase peak memory."
             )
