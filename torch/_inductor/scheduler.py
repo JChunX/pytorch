@@ -1100,6 +1100,22 @@ class BaseSchedulerNode:
         counters["inductor"]["flop_count"] += resolved_flops
         return resolved_flops
 
+    @cache_on_self
+    def get_numel_hint(self) -> int:
+        group = getattr(self, "group", None)
+        if not group:
+            return 0
+        try:
+            numel_expr = group[1][0]
+        except (TypeError, IndexError):
+            return 0
+        if isinstance(numel_expr, (tuple, list)):
+            numel_expr = sympy_product(numel_expr)
+        try:
+            return V.graph.sizevars.size_hint(numel_expr, fallback=0)
+        except Exception:
+            return 0
+
     def get_estimated_runtime(self) -> float:
         if self.override_estimated_runtime is not None:
             return self.override_estimated_runtime
@@ -4199,6 +4215,46 @@ class Scheduler:
         if V.graph.sizevars.statically_known_gt(memory_overhead, 32 * bw_saving):
             return True
         return False
+
+    def allow_small_horizontal_fusion(
+        self,
+        node1: BaseSchedulerNode,
+        node2: BaseSchedulerNode,
+        shared_data_score: int,
+    ) -> bool:
+        if not config.horizontal_fusion_small_kernel_enable:
+            return False
+        if node1.is_reduction() or node2.is_reduction():
+            return False
+        if node1.is_template() or node2.is_template():
+            return False
+        if node1.is_foreach() or node2.is_foreach():
+            return False
+        device = node1.get_device()
+        if device != node2.get_device():
+            return False
+        total_nodes = len(node1.get_nodes()) + len(node2.get_nodes())
+        if total_nodes > config.horizontal_fusion_small_kernel_max_nodes:
+            return False
+        runtime_sum = node1.get_estimated_runtime() + node2.get_estimated_runtime()
+        numel_hint = min(node1.get_numel_hint(), node2.get_numel_hint())
+        runtime_ok = runtime_sum > 0.0 and runtime_sum <= config.horizontal_fusion_small_kernel_runtime_ms
+        size_ok = numel_hint > 0 and numel_hint <= config.horizontal_fusion_small_kernel_numel_hint
+        if not (runtime_ok or size_ok):
+            return False
+        read_names1 = OrderedSet(dep.name for dep in node1.read_writes.reads)
+        read_names2 = OrderedSet(dep.name for dep in node2.read_writes.reads)
+        common_reads = read_names1 & read_names2
+        if not common_reads and shared_data_score == 0:
+            return False
+        try:
+            _, (numel1, rnumel1) = node1.group
+            _, (numel2, rnumel2) = node2.group
+        except Exception:
+            return False
+        if numel1 != numel2 or rnumel1 != rnumel2:
+            return False
+        return True
 
     def fusion_prevent_too_many_reads_and_writes(
         self, node1: BaseSchedulerNode, node2: BaseSchedulerNode, threshold: int

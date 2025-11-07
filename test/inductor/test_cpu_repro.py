@@ -3735,6 +3735,25 @@ class CPUReproTests(TestCase):
             self.assertEqual(metrics.generated_kernel_count, 1)
             self.assertTrue(same(fn(a, b, c, idx), opt_fn(a, b, c, idx)))
 
+    def test_horizontal_fusion_tiny_workload(self):
+        def fn(x):
+            return x + 1, x * 2
+
+        x = torch.randn(2)
+        torch._dynamo.reset()
+        metrics.reset()
+        with config.patch(
+            {
+                "horizontal_fusion_small_kernel_enable": True,
+                "horizontal_fusion_small_kernel_numel_hint": 16,
+            }
+        ):
+            opt_fn = torch.compile(fn, backend="inductor")
+            ref = fn(x)
+            res = opt_fn(x)
+            self.assertTrue(same(ref, res))
+            self.assertEqual(metrics.generated_kernel_count, 1)
+
     def test_lowp_fp_neg_abs(self):
         def fn(x):
             return x.neg().abs()

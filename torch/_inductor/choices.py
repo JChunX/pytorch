@@ -564,6 +564,10 @@ class InductorChoices:
         if (
             shared_data_score < config.score_fusion_memory_threshold
         ) and not MixOrderReduction.can_fuse(node1, node2):
+            if scheduler.allow_small_horizontal_fusion(
+                node1, node2, shared_data_score
+            ):
+                return True
             WhyNoFuse(node1, node2)("score_fusion_memory_threshold")
             return False
         if scheduler.are_long_distant_nodes(node1, node2):

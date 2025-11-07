@@ -703,6 +703,16 @@ loop_index_inversion_in_fusion: bool = True
 # For the cases loop ordering after fusion does not help, we don't lose much.
 score_fusion_memory_threshold = 10
 
+# Allow small horizontal kernels to fuse even when shared_data_score is low.
+horizontal_fusion_small_kernel_enable: bool = True
+# Runtime guard in milliseconds (ms). When per-kernel runtime estimates sum below
+# this threshold we consider fusing purely to shave launch overhead.
+horizontal_fusion_small_kernel_runtime_ms: float = 0.08
+# Fallback guard based on loop numel hint when runtime estimates are unavailable.
+horizontal_fusion_small_kernel_numel_hint: int = 32768
+# Cap total constituent nodes when we relax the default memory-score gate.
+horizontal_fusion_small_kernel_max_nodes: int = 8
+
 # For Triton Templates, select fastest of best template + epilogue vs best template + separate epilogue kernel
 benchmark_epilogue_fusion = (
     os.environ.get("TORCHINDUCTOR_BENCHMARK_EPILOGUE_FUSION", "1") == "1"
