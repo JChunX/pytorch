@@ -669,6 +669,22 @@ inductor_choices_class: Optional[Callable[[], "InductorChoices"]] = None
 # fuse even in cases without common reads
 aggressive_fusion = False
 
+# heuristics to aggressively fuse launch-bound, small kernels even when they do not
+# expose obvious memory reuse. Threshold expressed in bytes of total IO recorded by
+# scheduler nodes. Setting *_TOTAL_BYTES to 0 disables the heuristic.
+small_kernel_launch_fusion: bool = (
+    os.environ.get("TORCHINDUCTOR_SMALL_KERNEL_FUSION", "1") == "1"
+)
+small_kernel_launch_total_bytes: int = int(
+    os.environ.get("TORCHINDUCTOR_SMALL_KERNEL_FUSION_TOTAL_BYTES", "65536")
+)
+small_kernel_launch_bonus_bytes: int = int(
+    os.environ.get("TORCHINDUCTOR_SMALL_KERNEL_FUSION_BONUS_BYTES", "16")
+)
+small_kernel_fusion_max_candidates_per_group: int = int(
+    os.environ.get("TORCHINDUCTOR_SMALL_KERNEL_FUSION_MAX_CANDIDATES", "4")
+)
+
 # For each fused kernel in the wrapper, comment with the nodes that get fused.
 # Useful for debugging fusion.
 debug_fusion: bool = os.environ.get("TORCHINDUCTOR_DEBUG_FUSION") == "1"

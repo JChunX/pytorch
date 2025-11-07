@@ -4081,6 +4081,31 @@ class Scheduler:
         for node_grouping in buffer_names_grouping.values():
             check_all_pairs(node_grouping)
 
+        if (
+            config.small_kernel_launch_fusion
+            and config.small_kernel_launch_total_bytes > 0
+            and config.small_kernel_fusion_max_candidates_per_group > 1
+        ):
+            small_grouping: dict[Any, list[BaseSchedulerNode]] = collections.defaultdict(list)
+            for node in nodes:
+                group = getattr(node, "group", None)
+                if group is None or self.unfusable_node(node):
+                    continue
+                if not self._is_small_kernel_fusion_candidate(node):
+                    continue
+                small_grouping[group].append(node)
+
+            for node_grouping in small_grouping.values():
+                if len(node_grouping) < 2:
+                    continue
+                node_grouping.sort(
+                    key=lambda candidate: candidate.get_read_write_buffers_sizes()
+                )
+                limited_group = node_grouping[
+                    : config.small_kernel_fusion_max_candidates_per_group
+                ]
+                check_all_pairs(limited_group)
+
         if config.aggressive_fusion:
             group_grouping = collections.defaultdict(list)
             for node in nodes:
@@ -4274,6 +4299,81 @@ class Scheduler:
             abs(node2.min_order - node1.max_order),
         )
         return proximity_score > 64
+
+    def _is_small_kernel_fusion_candidate(self, node: BaseSchedulerNode) -> bool:
+        if not config.small_kernel_launch_fusion:
+            return False
+        if config.small_kernel_launch_total_bytes <= 0:
+            return False
+        if not node.is_gpu():
+            return False
+        if node.is_template() or node.is_reduction() or node.is_foreach():
+            return False
+        if node.has_aliasing_or_mutation() or node.has_side_effects():
+            return False
+        return (
+            node.get_read_write_buffers_sizes() <= config.small_kernel_launch_total_bytes
+        )
+
+    def _have_compatible_iteration_space(
+        self, node1: BaseSchedulerNode, node2: BaseSchedulerNode
+    ) -> bool:
+        group1 = getattr(node1, "group", None)
+        group2 = getattr(node2, "group", None)
+        return group1 is not None and group1 == group2
+
+    def _maybe_apply_small_kernel_bonus(
+        self,
+        node1: BaseSchedulerNode,
+        node2: BaseSchedulerNode,
+        shared_data_score: int,
+        is_vertical: bool,
+    ) -> int:
+        if shared_data_score >= config.score_fusion_memory_threshold:
+            return shared_data_score
+        if not config.small_kernel_launch_fusion:
+            return shared_data_score
+        if config.small_kernel_launch_total_bytes <= 0:
+            return shared_data_score
+        if config.small_kernel_launch_bonus_bytes <= 0:
+            return shared_data_score
+        if not node1.is_gpu() or not node2.is_gpu():
+            return shared_data_score
+        if (
+            node1.is_template()
+            or node2.is_template()
+            or node1.is_foreach()
+            or node2.is_foreach()
+        ):
+            return shared_data_score
+        if node1.has_aliasing_or_mutation() or node2.has_aliasing_or_mutation():
+            return shared_data_score
+        if node1.has_side_effects() or node2.has_side_effects():
+            return shared_data_score
+        total_bytes = (
+            node1.get_read_write_buffers_sizes()
+            + node2.get_read_write_buffers_sizes()
+        )
+        if total_bytes > config.small_kernel_launch_total_bytes:
+            return shared_data_score
+        if not is_vertical and not self._have_compatible_iteration_space(node1, node2):
+            return shared_data_score
+
+        bonus_needed = config.score_fusion_memory_threshold - shared_data_score
+        bonus = max(bonus_needed, config.small_kernel_launch_bonus_bytes)
+        if bonus <= 0:
+            return shared_data_score
+
+        if fusion_log.isEnabledFor(logging.DEBUG):
+            fusion_log.debug(
+                "Applying small-kernel launch bonus (%s) to fusion of %s and %s (io=%s)",
+                bonus,
+                node1.get_name(),
+                node2.get_name(),
+                total_bytes,
+            )
+
+        return shared_data_score + bonus
 
     def decide_fusion_fail_reason(
         self,
@@ -4898,10 +4998,15 @@ class Scheduler:
                 shared_data_score,
             )
 
+        is_vertical = bool(node1.get_operation_names() & node2.ancestors)
+        shared_data_score = self._maybe_apply_small_kernel_bonus(
+            node1, node2, shared_data_score, is_vertical
+        )
+
         if not V.choices.can_fuse(self, node1, node2, shared_data_score):
             return False
 
-        if node1.get_operation_names() & node2.ancestors:
+        if is_vertical:
             # node2 depends on node1 outputs
             return (
                 self.can_fuse_vertical(node1, node2)
